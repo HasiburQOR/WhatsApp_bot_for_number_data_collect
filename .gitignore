@@ -1,0 +1,23 @@
+# Build output
+build/
+dist/
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Runtime data -- NEVER commit these
+# saved WhatsApp login sessions (browser profiles)
+accounts/
+wa_profile/
+# your number lists and results
+ExcelFiles/
+*.xlsx
+*.log
+STOP.txt
+
+# Bundled browser (hundreds of MB; download separately)
+Browsers/
+ms-playwright/
