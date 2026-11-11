@@ -85,6 +85,11 @@ docstrings; original comments were not recoverable). Fixes since recovery:
 * **Phone number saved as a contact name** for contacts with no name set:
   `is_usable_name()` now rejects bare phone numbers.
 
+* **Every number after the first "not on WhatsApp" failed on some PCs**
+  ("paste ... did not land", "typing did not land"): the "isn't on WhatsApp"
+  popup stayed open and trapped clicks and keyboard focus. Popups are now
+  closed robustly, with a WhatsApp Web reload as the last resort.
+
 Pacing, breaks and cooldowns are unchanged from the original.
 
 ## Do not commit

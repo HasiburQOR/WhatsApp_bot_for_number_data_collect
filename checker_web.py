@@ -448,6 +448,85 @@ def ensure_login(page, headless, timeout=300, dbg=print):
     return False
 
 
+DIALOG_SELECTORS = [
+    'div[role="dialog"]',
+    'div[role="alertdialog"]',
+    'div[data-animate-modal-popup="true"]',
+    '[data-testid="popup-contents"]',
+]
+DIALOG_BUTTON_WORDS = ('ok', 'close', 'got it', 'done', 'dismiss')
+
+
+def _open_dialog(page, must_contain=None):
+    for sel in DIALOG_SELECTORS:
+        try:
+            for el in page.query_selector_all(sel):
+                if not el.is_visible():
+                    continue
+                if must_contain and must_contain not in (el.inner_text() or '').lower():
+                    continue
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def dismiss_dialogs(page, dbg, attempts=3):
+    """Close any modal popup (e.g. WhatsApp's "The phone number ... isn't on
+    WhatsApp" notice). While a popup is open it swallows every click and
+    keystroke, so the search box can never receive the number.
+
+    FIX: the original only looked for an exact "OK" button and otherwise sent
+    Escape; on WhatsApp builds where that did not close the popup, every
+    later number failed ("paste ... did not land", "typing did not land").
+    Returns True when no popup is left open."""
+    for attempt in range(attempts):
+        dlg = _open_dialog(page)
+        if not dlg:
+            return True
+        dbg(f'popup is open -- closing it ({attempt + 1}/{attempts})')
+        target = None
+        try:
+            buttons = [b for b in dlg.query_selector_all('button, div[role="button"]')
+                       if b.is_visible()]
+            for b in buttons:
+                txt = (b.inner_text() or '').strip().lower()
+                if txt in DIALOG_BUTTON_WORDS:
+                    target = b
+                    break
+            if target is None and len(buttons) == 1:
+                target = buttons[0]
+        except Exception:
+            target = None
+        try:
+            if target is not None:
+                human_click_element(page, target, dbg, 'popup button')
+            else:
+                page.keyboard.press('Escape')
+        except Exception:
+            pass
+        time.sleep(humanize(0.5))
+    still_open = _open_dialog(page) is not None
+    if still_open:
+        dbg('popup would not close')
+    return not still_open
+
+
+def describe_focus(page):
+    """Short description of the element that currently has keyboard focus
+    (for debug lines when typed/pasted text does not reach the search box)."""
+    try:
+        return page.evaluate(
+            "() => { const e = document.activeElement; if (!e) return 'nothing'; "
+            "const bits = [e.tagName.toLowerCase()]; "
+            "for (const a of ['role', 'aria-label', 'title', 'data-tab']) "
+            "{ const v = e.getAttribute(a); if (v) bits.push(a + '=' + JSON.stringify(v.slice(0, 40))); } "
+            "if (e.closest('[role=dialog]')) bits.push('(inside a popup)'); "
+            "return bits.join(' '); }")
+    except Exception as e:
+        return f'unknown ({e})'
+
+
 def open_search_box(page, dbg):
     """Dismiss any open panel, then focus the chat-list search box (clicking
     it twice like the desktop bot did, in case it was collapsed). Returns the
@@ -459,33 +538,58 @@ def open_search_box(page, dbg):
     except Exception as e:
         dbg(f'initial ESC failed: {e}')
 
+    # Recovery ladder, cheapest first. Step 0 is the normal path and is
+    # exactly the original behaviour; the later steps only run when the search
+    # box did not take focus (e.g. a popup is swallowing clicks/keystrokes).
     box = None
-    for attempt in range(8):
-        box = find_first(page, SEARCH_BOX_SELECTORS, visible_only=True)
-        if box:
-            break
-        dbg(f'search box not found, retry {attempt + 1}/8')
-        time.sleep(0.3)
-    if not box:
-        return None
+    for step in range(3):
+        if step == 1:
+            dbg(f'search box not focused (focus is on: {describe_focus(page)}) -- checking for a popup')
+            dismiss_dialogs(page, dbg)
+        elif step == 2:
+            # Last resort: reload the app -- no popup survives a reload.
+            dbg('still no focus -- reloading WhatsApp Web')
+            try:
+                page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
+                find_first(page, SEARCH_BOX_SELECTORS, timeout_ms=30000)
+            except Exception as e:
+                dbg(f'reload failed: {e}')
 
-    try:
-        box.scroll_into_view_if_needed()
-    except Exception:
-        pass
+        box = None
+        for attempt in range(8):
+            box = find_first(page, SEARCH_BOX_SELECTORS, visible_only=True)
+            if box:
+                break
+            dbg(f'search box not found, retry {attempt + 1}/8')
+            time.sleep(0.3)
+        if not box:
+            continue
 
-    # Same rhythm as the original exe: two clicks with a pause between them
-    # (in case the box was collapsed). Each click re-measures the box, so a
-    # layout shift between the clicks no longer sends one to the wrong place.
-    micro_break()
-    human_click_element(page, box, dbg, 'search box')
-    time.sleep(humanize(0.3))
-    human_click_element(page, box, dbg, 'search box')
-    time.sleep(humanize(0.2))
-    if not _is_focused(box):
-        dbg('search box not focused after two clicks -- focusing it directly')
+        try:
+            box.scroll_into_view_if_needed()
+        except Exception:
+            pass
+
+        # Same rhythm as the original exe: two clicks with a pause between
+        # them (in case the box was collapsed). Each click re-measures the
+        # box, so a layout shift no longer sends a click to the wrong place.
+        micro_break()
+        human_click_element(page, box, dbg, 'search box')
+        time.sleep(humanize(0.3))
+        human_click_element(page, box, dbg, 'search box')
+        time.sleep(humanize(0.2))
+        if _is_focused(box):
+            return box
+        if _open_dialog(page):
+            # A popup is open: it traps focus, so focusing the box directly
+            # would not stick. Close it first (next step of the ladder).
+            continue
         try:
             box.focus()
+            time.sleep(0.3)  # let any focus trap run before trusting it
+            if _is_focused(box):
+                dbg('search box focused directly after the clicks missed')
+                return box
         except Exception:
             pass
     return box
@@ -684,6 +788,7 @@ def paste_digits(page, digits, p, dbg):
     if focused_field_text(page) == digits:
         return True
     dbg('typing did not land either -- the search pane cannot be trusted')
+    dbg(f'keyboard focus is on: {describe_focus(page)}')
     return False
 
 
@@ -861,14 +966,18 @@ def probe_number_chat(page, digits, dbg, timeout=20.0):
                 dbg("probe: WhatsApp says this number isn't on WhatsApp")
                 try:
                     ok = find_first(page, ('div[role="button"]:has-text("OK")',
-                                           'button:has-text("OK")'))
+                                           'button:has-text("OK")'), visible_only=True)
                     if ok:
-                        ok.click()
+                        human_click_element(page, ok, dbg, 'OK button')
                     else:
                         page.keyboard.press('Escape')
                     time.sleep(humanize(0.4))
                 except Exception:
                     pass
+                # make sure the notice is really gone before the next number
+                time.sleep(0.3)
+                if _open_dialog(page, must_contain='whatsapp'):
+                    dismiss_dialogs(page, dbg)
                 return (False, None)
             title = None
             for sel in ('#main header span[dir="auto"]', '#main header [title]'):
