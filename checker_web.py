@@ -86,26 +86,67 @@ CHROMIUM_ARGS = [
 ]
 
 
+# --- speed profile ----------------------------------------------------------
+# 'slow' (default): every pause and every mouse movement takes longer, and the
+#                   gaps between numbers / breaks are longer -- more human.
+# 'original':       exactly the timing of the original exe.
+# apply_speed() sets these at startup (from --speed).
+SPEED = 'slow'
+ACTION_SCALE = 1.0   # scales humanize(), micro_delay(), micro_break()
+MOUSE_SCALE = 1.0    # scales mouse travel and button-press timing
+STEP_SCALE = 1.0     # more points per mouse path (slower, smoother curve)
+
+SLOW_PACING = {
+    'full': {
+        'delay_min': 4.0, 'delay_max': 9.0,          # gap between numbers
+        'break_every': 12, 'break_min': 25.0, 'break_max': 60.0,
+        'type_min': 0.08, 'type_max': 0.2,            # only if typing fallback
+        'settle': 1.0, 'max_wait': 2.5,               # time "reading" results
+    },
+    'fast': {
+        'delay_min': 1.5, 'delay_max': 3.5,
+        'type_min': 0.05, 'type_max': 0.12,
+        'settle': 0.5, 'max_wait': 1.5,
+    },
+}
+
+
+def apply_speed(speed):
+    global SPEED, ACTION_SCALE, MOUSE_SCALE, STEP_SCALE
+    SPEED = speed
+    if speed == 'slow':
+        ACTION_SCALE, MOUSE_SCALE, STEP_SCALE = 1.8, 2.2, 2.0
+        for mode, overrides in SLOW_PACING.items():
+            PACING[mode].update(overrides)
+    else:
+        ACTION_SCALE, MOUSE_SCALE, STEP_SCALE = 1.0, 1.0, 1.0
+
+
+def _msleep(low, high):
+    """Randomized pause inside mouse movement / clicks, scaled by MOUSE_SCALE."""
+    time.sleep(random.uniform(low, high) * MOUSE_SCALE)
+
+
 def humanize(seconds):
     """Add +/-20-30% jitter so short internal waits aren't perfectly uniform."""
-    return seconds * random.uniform(0.8, 1.3)
+    return seconds * random.uniform(0.8, 1.3) * ACTION_SCALE
 
 
 def micro_delay(low, high):
     """A small randomized pause between individual actions inside one search."""
-    time.sleep(random.uniform(low, high))
+    time.sleep(random.uniform(low, high) * ACTION_SCALE)
 
 
 def micro_break():
     """Short, irregular pause between mouse/keyboard actions (weighted brief)."""
     r = random.random()
     if r < 0.1:
-        time.sleep(random.uniform(0.01, 0.05))
+        time.sleep(random.uniform(0.01, 0.05) * ACTION_SCALE)
         return
     if r < 0.8:
-        time.sleep(random.uniform(0.06, 0.25))
+        time.sleep(random.uniform(0.06, 0.25) * ACTION_SCALE)
         return
-    time.sleep(random.uniform(0.25, 0.6))
+    time.sleep(random.uniform(0.25, 0.6) * ACTION_SCALE)
 
 
 def interruptible_sleep(seconds, stop_file, chunk=1.0):
@@ -142,6 +183,8 @@ def _bezier_path(start, target, ctrl, ease_fn, steps):
     sx, sy = start
     tx, ty = target
     cx, cy = ctrl
+    # slow speed: more points along the same curve -> slower, smoother travel
+    steps = max(1, int(round(steps * STEP_SCALE)))
     for i in range(1, steps + 1):
         t = ease_fn(i / steps)
         x = (1 - t) ** 2 * sx + 2 * (1 - t) * t * cx + t ** 2 * tx
@@ -180,7 +223,7 @@ def human_mouse_move(page, target_x, target_y):
             ease = lambda t: 1 - (1 - t) ** 2
             for x, y in _bezier_path((start_x, start_y), (target_x, target_y), ctrl, ease, steps):
                 page.mouse.move(int(x), int(y))
-                time.sleep(random.uniform(0.003, 0.01))
+                _msleep(0.003, 0.01)
         elif style == 'hesitant':
             steps = max(8, min(24, int(distance / 15)))
             ctrl = bow_ctrl(random.uniform(0.1, 0.22))
@@ -189,9 +232,9 @@ def human_mouse_move(page, target_x, target_y):
             for i, (x, y) in enumerate(
                     _bezier_path((start_x, start_y), (target_x, target_y), ctrl, ease, steps), start=1):
                 page.mouse.move(int(x), int(y))
-                time.sleep(random.uniform(0.005, 0.014))
+                _msleep(0.005, 0.014)
                 if i == pause_at:
-                    time.sleep(random.uniform(0.08, 0.25))
+                    _msleep(0.08, 0.25)
         elif style == 'overshoot':
             steps = max(7, min(18, int(distance / 20)))
             ctrl = bow_ctrl(random.uniform(0.06, 0.16))
@@ -201,20 +244,20 @@ def human_mouse_move(page, target_x, target_y):
             ease = lambda t: 1 - (1 - t) ** 2
             for x, y in _bezier_path((start_x, start_y), (ox, oy), ctrl, ease, steps):
                 page.mouse.move(int(x), int(y))
-                time.sleep(random.uniform(0.004, 0.012))
-            time.sleep(random.uniform(0.03, 0.09))
+                _msleep(0.004, 0.012)
+            _msleep(0.03, 0.09)
             for x, y in _bezier_path((ox, oy), (target_x, target_y),
                                      ((ox + target_x) / 2, (oy + target_y) / 2),
                                      lambda t: t, max(3, steps // 4)):
                 page.mouse.move(int(x), int(y))
-                time.sleep(random.uniform(0.004, 0.01))
+                _msleep(0.004, 0.01)
         else:  # smooth
             steps = max(6, min(22, int(distance / 18)))
             ctrl = bow_ctrl(random.uniform(0.05, 0.18))
             ease = lambda t: 1 - (1 - t) ** 2
             for x, y in _bezier_path((start_x, start_y), (target_x, target_y), ctrl, ease, steps):
                 page.mouse.move(int(x), int(y))
-                time.sleep(random.uniform(0.004, 0.016))
+                _msleep(0.004, 0.016)
     except Exception:
         pass
     try:
@@ -228,9 +271,9 @@ def human_click(page, x, y):
     """Move to (x, y) on a human-ish path, then click-and-release with a
     natural press duration. All of it is trusted input inside Chromium."""
     human_mouse_move(page, x, y)
-    time.sleep(random.uniform(0.04, 0.18))
+    _msleep(0.04, 0.18)
     page.mouse.down()
-    time.sleep(random.uniform(0.045, 0.1))
+    _msleep(0.045, 0.1)
     page.mouse.up()
 
 
@@ -315,9 +358,9 @@ def human_click_element(page, element, dbg=None, what='element'):
     # Always finish with a human-paced press at the element's current centre
     # (never Playwright's instant click, which has no mouse movement at all).
     human_mouse_move(page, now[0], now[1])
-    time.sleep(random.uniform(0.04, 0.18))
+    _msleep(0.04, 0.18)
     page.mouse.down()
-    time.sleep(random.uniform(0.045, 0.1))
+    _msleep(0.045, 0.1)
     page.mouse.up()
 
 
@@ -1855,6 +1898,8 @@ def run(args):
     mode = args.mode
     print('\n==================================================')
     print(f"  WhatsApp Number Checker -- Web ({'fast' if mode == 'fast' else 'full'})")
+    print(f'  Speed: {SPEED}' + ('  (slower, more human; use --speed original for the old timing)'
+                                if SPEED == 'slow' else ''))
     print('==================================================\n')
 
     filepath = pick_excel_file(args.excel)
@@ -1935,6 +1980,9 @@ def build_arg_parser():
                     help='list the saved WhatsApp accounts and exit')
     ap.add_argument('--yes', action='store_true',
                     help="assume 'yes' at confirmation prompts (e.g. --logout)")
+    ap.add_argument('--speed', choices=['slow', 'original'], default='slow',
+                    help="'slow' (default) = slower, more human mouse movement and pauses; "
+                         "'original' = exact timing of the original exe")
     ap.add_argument('--no-menu', action='store_true',
                     help='skip the interactive startup menu')
     return ap
@@ -1942,6 +1990,7 @@ def build_arg_parser():
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
+    apply_speed(args.speed)
     if args.list_accounts:
         print_accounts()
         return 0

@@ -33,10 +33,19 @@ Options (pass after the script name):
 ```
 --mode fast | --mode full (default)   availability only / also name + links
 --headless                            invisible browser; QR prints as ASCII
+--speed slow | --speed original       slow = more human (default)
 --account NAME                        use another saved WhatsApp account
 --login / --logout / --list-accounts  account management
 path\to\file.xlsx                     explicit Excel file
 ```
+
+## Speed
+
+`--speed slow` (default) makes everything slower and more human: mouse paths
+have twice as many points and ~2x longer pauses, actions pause ~1.8x longer,
+4-9 s between numbers, and a 25-60 s break every 12 numbers.
+`--speed original` restores the exact timing of the original exe
+(1.5-3.5 s gaps, break every 15). Values are in `SLOW_PACING` / `apply_speed()`.
 
 ## Portable layout (for the exe)
 
